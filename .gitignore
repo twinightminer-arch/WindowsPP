@@ -4,7 +4,7 @@ __pycache__/
 *.egg-info/
 
 # 打包产物
-Windows++_v1.0.zip
+*.zip
 Windows++ 使用说明.docx
 
 # 日志与临时文件

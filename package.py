@@ -86,6 +86,8 @@ def build_docx(path):
     bullet(doc, "一键识别电脑上安装的所有软件（通过注册表枚举）；")
     bullet(doc, "借助 winget（Windows 包管理器）比对最新版本，标出可更新项；")
     bullet(doc, "一键批量自动更新，支持暂停 / 跳过 / 取消等细粒度控制；")
+    bullet(doc, "旧版文件残留扫描 / 杀出（保留登录与使用数据）、清除下载安装包；")
+    bullet(doc, "设置界面：桌面图标锁定（新增文件提示）、开机启动开关；")
     bullet(doc, "导出文本报告，便于留档或离线查看。")
 
     # 二、环境要求
@@ -134,8 +136,34 @@ def build_docx(path):
     para(doc, "4. 更新过程中可随时控制（见下方功能表），状态列实时显示每个软件的结果；", size=10.5)
     para(doc, "5. 点击「📄 导出报告」可将结果保存为 txt。", size=10.5)
 
-    # 六、功能表
-    h(doc, "六、更新控制与状态说明")
+    # 六、设置与高级功能（v2.0）
+    h(doc, "六、设置与高级功能（v2.0）")
+    para(doc, "点击主界面「⚙ 设置」按钮打开设置界面，包含以下功能：", size=10.5)
+    rows2 = [
+        ("🔍 扫描旧版文件（只读）", "列出“同目录并存多版本”的旧版残留，不执行任何删除"),
+        ("🗡 杀出旧版文件", "扫描后弹出勾选清单，确认后删除旧程序目录（保留登录与使用数据）"),
+        ("🔒 桌面图标锁定", "开启后桌面图标自动对齐网格、禁止拖乱；桌面新增文件/文件夹时弹窗提示，可临时关闭锁定整理桌面"),
+        ("🚀 开机启动", "勾选后写入注册表「启动」项，开机自动后台最小化运行（监控桌面）；取消勾选即移除"),
+    ]
+    table2 = doc.add_table(rows=len(rows2), cols=2)
+    table2.style = "Light Grid Accent 1"
+    for i, (a, b) in enumerate(rows2):
+        c0 = table2.cell(i, 0)
+        c0.text = ""
+        r = c0.paragraphs[0].add_run(a)
+        r.bold = True
+        r.font.size = Pt(10)
+        c1 = table2.cell(i, 1)
+        c1.text = ""
+        r = c1.paragraphs[0].add_run(b)
+        r.font.size = Pt(10)
+    para(doc, "主界面第二行按钮：「⏸ 暂停更新 / ⏭ 跳过当前 / ✖ 取消当前 / ⏹ 取消全部」"
+              "及「🧹 清理旧版本文件 / 🔍 扫描旧版文件」，供快速操作。", size=10.5)
+    para(doc, "命令行附加用法：", size=10.5)
+    code_block(doc, "python WindowsPP.py --tray   # 后台最小化运行（开机启动场景）")
+
+    # 七、功能表
+    h(doc, "七、更新控制与状态说明")
     rows = [
         ("⏸ 暂停更新 / ▶ 继续更新", "暂停队列：等待中的软件不再启动，正在运行的会跑完"),
         ("⏭ 跳过当前", "终止正在更新的软件（标记「已跳过」）；无运行中则跳过下一个"),
@@ -159,8 +187,8 @@ def build_docx(path):
         r = c1.paragraphs[0].add_run(b)
         r.font.size = Pt(10)
 
-    # 七、常见问题
-    h(doc, "七、常见问题（FAQ）")
+    # 八、常见问题
+    h(doc, "八、常见问题（FAQ）")
     faqs = [
         ("启动时提示找不到 winget？",
          "请在微软商店安装「应用安装程序」（App Installer），装完重开程序。"),
@@ -186,8 +214,8 @@ def build_docx(path):
         r = p.add_run("A: " + a)
         r.font.size = Pt(10.5)
 
-    # 八、安全说明
-    h(doc, "八、安全与免责说明")
+    # 九、安全说明
+    h(doc, "九、安全与免责说明")
     bullet(doc, "更新前会弹出清单确认，绝不静默安装；")
     bullet(doc, "所有更新均调用系统自带的 winget 完成，安装包来自 winget 官方源（winget / msstore）；")
     bullet(doc, "「跳过 / 取消」会强制结束 winget 进程树，极少数情况可能留下不完整安装，重试一次即可；")
@@ -216,7 +244,7 @@ def main():
     build_docx(docx_path)
     print(f"DOCX OK: {docx_path} ({os.path.getsize(docx_path)} bytes)")
 
-    zip_path = os.path.join(BASE, "Windows++_v1.0.zip")
+    zip_path = os.path.join(BASE, "Windows++_v2.0.zip")
     make_zip(zip_path, docx_path)
     print(f"ZIP OK: {zip_path} ({os.path.getsize(zip_path)} bytes)")
 
