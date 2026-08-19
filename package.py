@@ -9,7 +9,7 @@ from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "4.0"
+VERSION = "4.0.1"
 
 import ctypes
 _buf = ctypes.create_unicode_buffer(260)
@@ -137,9 +137,9 @@ def build_docx(path):
     h(doc, "八、桌面锁定")
     para(doc, "1. 「🔍 一键扫描桌面图标」：列出桌面全部图标及其类型；")
     para(doc, "2. 点击每行的「🔒」列可单独锁定/解锁该图标（状态持久化保存）；")
-    para(doc, "3. 锁定后，该图标被移动、删除或重命名时程序会弹窗提示「桌面图标已锁定」，可一键前往解锁；")
-    para(doc, "4. 顶部「全局锁定」开关：启用桌面图标自动排列，从系统层面禁止拖乱。")
-    para(doc, "说明：Windows 未提供阻止拖拽的官方接口，真正的「禁止移动」需配合全局锁定（自动排列）使用。")
+    para(doc, "3. 锁定后，该图标被鼠标拖拽时会被直接拦截（无法移动/拖乱），双击仍可正常打开软件；若图标被删除或重命名，程序会弹窗提示「桌面图标已锁定」，可一键前往解锁；")
+    para(doc, "4. 顶部「全局锁定」开关：启用桌面图标自动排列，从系统层面禁止排列变化。")
+    para(doc, "说明：桌面图标锁定已通过全局鼠标钩子（WH_MOUSE_LL）直接阻止拖拽，锁定后图标无法被拖动；如需从系统层彻底禁止排列变化，可再开启「全局锁定（自动排列）」。")
 
     h(doc, "九、设置")
     bullet(doc, "开机自启动：Windows++ 自身开机后台运行开关（写入注册表「启动」项）；")
@@ -172,7 +172,7 @@ def build_docx(path):
         ("小工具下载失败？", "检查网络连接后重试；下载源为 Win7 官方小工具存档（GitHub Pages），一般可直接访问。"),
         ("录屏无法开始？", "请确认已安装 ffmpeg 并加入 PATH（ffmpeg -version 可验证）；若音频设备不可用会自动仅录画面。"),
         ("背景图片不显示？", "图片缩放/透明度需要 pillow（pip install pillow）；未安装时显示原尺寸。"),
-        ("桌面锁定拦不住拖拽？", "请同时开启「全局锁定（自动排列）」；Windows 无阻止拖拽的官方接口。"),
+        ("桌面锁定拦不住拖拽？", "v4.0.1 起已通过鼠标钩子直接拦截桌面图标的拖拽，锁定后图标无法被拖动；若仍想从系统层彻底禁止排列变化，可同时开启「全局锁定（自动排列）」。"),
     ]
     for q, a in faqs:
         p = doc.add_paragraph()

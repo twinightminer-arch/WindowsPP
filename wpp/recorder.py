@@ -120,6 +120,7 @@ class Recorder:
 
     def __init__(self):
         self._proc = None
+        self._stderr_thread = None
         self.out_path = None
         self.started_at = 0.0
         self.error = None
@@ -127,6 +128,15 @@ class Recorder:
     @property
     def recording(self):
         return self._proc is not None and self._proc.poll() is None
+
+    def _read_stderr(self, proc):
+        """后台读取 ffmpeg stderr，用于诊断。"""
+        try:
+            for line in iter(proc.stderr.readline, b""):
+                if line:
+                    self.error = (self.error or "") + line.decode("utf-8", "ignore")
+        except Exception:
+            pass
 
     def start(self, region=None, out_dir=None, fps=10, audio=True):
         ffmpeg = find_ffmpeg()
@@ -138,33 +148,48 @@ class Recorder:
         d = pick_save_dir(out_dir)
         name = "WindowsPP_录屏_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + ".mp4"
         self.out_path = os.path.join(d, name)
+        self.error = None
+
+        # 基础 gdigrab 命令（区域 / 全屏）
         cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-               "-f", "gdigrab", "-framerate", str(int(fps)), "-i", "desktop"]
+               "-f", "gdigrab", "-framerate", str(int(fps)),
+               "-draw_mouse", "1", "-i", "desktop"]
         if region:
             x, y, w, h = [int(v) for v in region]
             if w > 0 and h > 0:
                 cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                        "-f", "gdigrab", "-framerate", str(int(fps)),
+                       "-draw_mouse", "1",
                        "-offset_x", str(x), "-offset_y", str(y),
                        "-video_size", f"{w}x{h}", "-i", "desktop"]
+
+        # 音频：无可用设备时仅录制画面，避免损坏文件
         dev = pick_audio_device(ffmpeg) if audio else None
         if dev:
-            cmd += ["-f", "dshow", "-i", f"audio={dev}"]
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]
+            cmd += ["-f", "dshow", "-thread_queue_size", "4096", "-i", f"audio={dev}"]
+
+        # 视频编码：yuv420p 保证兼容性；AAC 音频（仅在音频设备有效时）
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                "-pix_fmt", "yuv420p", "-threads", "0"]
         if dev:
-            cmd += ["-c:a", "aac", "-shortest"]
-        cmd += ["-threads", "0", self.out_path]
+            cmd += ["-c:a", "aac", "-b:a", "128k", "-shortest"]
+        cmd += [self.out_path]
+
         try:
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, startupinfo=C._startupinfo())
+                stderr=subprocess.PIPE, startupinfo=C._startupinfo())
         except Exception as e:
             self.error = f"启动 ffmpeg 失败: {e}"
             return False
+
+        self._stderr_thread = threading.Thread(target=self._read_stderr, args=(self._proc,), daemon=True)
+        self._stderr_thread.start()
+
         self.started_at = time.monotonic()
         time.sleep(0.8)
         if not self.recording:
-            self.error = "ffmpeg 启动后立即退出（可能设备被占用或无权限）"
+            self.error = (self.error or "ffmpeg 启动后立即退出（可能设备被占用或无权限）").strip()
             return False
         return True
 
@@ -180,15 +205,51 @@ class Recorder:
         except Exception:
             pass
         try:
-            proc.wait(timeout=15)
+            proc.wait(timeout=20)
         except Exception:
             try:
                 proc.terminate()
+                proc.wait(timeout=5)
             except Exception:
                 pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if self._stderr_thread and self._stderr_thread.is_alive():
+            try:
+                self._stderr_thread.join(timeout=2)
+            except Exception:
+                pass
+        self._stderr_thread = None
+
+        # 验证文件可被 ffprobe 识别；否则给出更明确的错误
         if self.out_path and os.path.isfile(self.out_path) and os.path.getsize(self.out_path) > 1024:
-            return self.out_path
+            if self._video_valid(self.out_path):
+                return self.out_path
+            self.error = (self.error or "") + " 输出文件生成但无法被 ffprobe 解析，可能编码参数不受支持。"
         return None
+
+    def _video_valid(self, path):
+        """用 ffprobe 快速验证文件是否可解码。"""
+        ffprobe = None
+        for cand in (shutil.which("ffprobe"),
+                     r"C:\ffmpeg\bin\ffprobe.exe",
+                     r"C:\Program Files\ffmpeg\bin\ffprobe.exe"):
+            if cand and os.path.isfile(cand):
+                ffprobe = cand
+                break
+        if not ffprobe:
+            return True
+        try:
+            r = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, errors="ignore",
+                timeout=15, startupinfo=C._startupinfo())
+            return bool((r.stdout or "").strip())
+        except Exception:
+            return True
 
 
 # ============================================================

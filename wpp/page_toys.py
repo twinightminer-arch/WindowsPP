@@ -91,6 +91,122 @@ def _mshta_path():
     return os.path.join(windir, "System32", "mshta.exe")
 
 
+def _runtime_dir(key):
+    return os.path.join(_gadgets_dir(), key, "runtime")
+
+
+def _make_system_stub(runtime_dir, key):
+    """生成注入到 gadget HTML 的 JS stub，模拟 Windows 7 Sidebar 的 System 对象。"""
+    runtime_dir_js = runtime_dir.replace("\\", "/")
+    return rf'''<script>
+(function(){{
+  var stubStorage = {{}};
+  var stubTimeZones = {{count: 0, item: function(i){{ return null; }}}};
+  window.System = window.System || {{
+    Gadget: {{
+      path: "{runtime_dir_js}/app",
+      name: "{key}",
+      version: "1.0",
+      Platform: {{ version: "6.0" }},
+      Settings: {{
+        read: function(n){{ try{{ return localStorage.getItem("wpp_gadget_" + n) || ""; }}catch(e){{ return stubStorage[n] || ""; }} }},
+        readString: function(n){{ return this.read(n); }},
+        write: function(n, v){{ try{{ localStorage.setItem("wpp_gadget_" + n, String(v)); }}catch(e){{ stubStorage[n] = String(v); }} }},
+        writeString: function(n, v){{ this.write(n, v); }}
+      }},
+      settingsUI: "",
+      onSettingsClosed: null,
+      onSettingsClosing: null,
+      visibilityChanged: null
+    }},
+    Time: {{
+      now: function(){{ return new Date(); }},
+      timeZones: stubTimeZones
+    }},
+    Shell: {{}}
+  }};
+  if (!HTMLDivElement.prototype._wpp_src_patched) {{
+    Object.defineProperty(HTMLDivElement.prototype, 'src', {{
+      get: function(){{ return this.getAttribute('src') || ''; }},
+      set: function(v){{
+        this.setAttribute('src', v);
+        if (/^url\(/.test(v)) {{ this.style.backgroundImage = v; }}
+        else if (v) {{ this.style.backgroundImage = 'url("' + v + '")'; }}
+      }}
+    }});
+    HTMLImageElement.prototype.addShadow = function(){{}};
+    HTMLDivElement.prototype.addShadow = function(){{}};
+    HTMLDivElement.prototype._wpp_src_patched = true;
+  }}
+}})();
+</script>'''
+
+
+def _transform_gadget_html(html_path, runtime_dir, key):
+    """把 gadget HTML 转换为可在 mshta/IE 下运行的普通 HTML。"""
+    try:
+        with open(html_path, "r", encoding="utf-16", errors="ignore") as f:
+            text = f.read()
+    except Exception:
+        with open(html_path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+    # 注入 System stub（放在 </head> 前）
+    stub = _make_system_stub(runtime_dir, key)
+    if "</head>" in text:
+        text = text.replace("</head>", stub + "\n</head>", 1)
+    else:
+        text = stub + "\n" + text
+    # 把 g:background/g:image 标签转成普通 HTML 元素
+    text = re.sub(r'<g:background\s+([^>]*?)\s*/?>',
+                  lambda m: f'<div {m.group(1)}></div>',
+                  text, flags=re.I)
+    text = re.sub(r'<g:background\b([^>]*)>(.*?)</g:background>',
+                  lambda m: f'<div{m.group(1)}>{m.group(2)}</div>',
+                  text, flags=re.I | re.S)
+    text = re.sub(r'<g:image\s+([^>]*?)\s*/?>',
+                  lambda m: f'<img {m.group(1)} />',
+                  text, flags=re.I)
+    text = re.sub(r'</g:image>', "", text, flags=re.I)
+    # 写入（保留 UTF-16 BOM，与原始 gadget 一致）
+    with open(html_path, "w", encoding="utf-16") as f:
+        f.write(text)
+
+
+def _prepare_gadget_runtime(key, html):
+    """为 gadget 创建运行时副本并做 IE/HTA 兼容转换，返回转换后的主 HTML 路径。
+
+    已转换过（运行时存在且已注入 System stub）则直接复用，避免每次打开都
+    重建目录（更省资源，也避免重复删除/复制）。"""
+    app_dir = os.path.dirname(html)          # .../app/en-US
+    app_root = os.path.dirname(app_dir)      # .../app
+    runtime_root = _runtime_dir(key)
+    runtime_app = os.path.join(runtime_root, "app")
+    rel = os.path.relpath(html, app_root)
+    existing = os.path.join(runtime_app, rel)
+    if os.path.isfile(existing):
+        try:
+            with open(existing, "r", encoding="utf-16", errors="ignore") as f:
+                if "window.System" in f.read():
+                    return existing          # 已转换，直接复用
+        except Exception:
+            pass
+    # 首次 / 失效：重新复制并转换
+    if os.path.isdir(runtime_app):
+        try:
+            shutil.rmtree(runtime_app)
+        except Exception:
+            pass
+    shutil.copytree(app_root, runtime_app)
+    new_html = os.path.join(runtime_app, rel)
+    if os.path.isfile(new_html):
+        _transform_gadget_html(new_html, runtime_root, key)
+    # 同时转换 settings.html（如果存在）
+    settings_html = os.path.join(os.path.dirname(new_html), "settings.html")
+    if os.path.isfile(settings_html):
+        _transform_gadget_html(settings_html, runtime_root, key)
+    return new_html
+
+
 def _find_pet_exe(dir_path):
     if not dir_path or not os.path.isdir(dir_path):
         return None
@@ -243,20 +359,21 @@ class PageToys(tk.Frame):
         if not installed:
             messagebox.showinfo(C.APP_NAME, "请先安装该小工具")
             return
-        mshta = _mshta_path()
-        if html:
+        if not html:
             try:
-                if os.path.isfile(mshta):
-                    # 以独立程序窗口运行（mshta HTA），小工具内容直接显示在桌面窗口
-                    subprocess.Popen([mshta, html], startupinfo=C._startupinfo())
-                    self.app.set_status(f"已打开小工具「{key}」（独立窗口）")
-                    return
-                os.startfile(html)
-                return
+                os.startfile(os.path.join(_gadgets_dir(), key))
             except Exception as e:
                 messagebox.showerror(C.APP_NAME, f"打开失败: {e}")
+            return
+        mshta = _mshta_path()
         try:
-            os.startfile(os.path.join(_gadgets_dir(), key))
+            runtime_html = _prepare_gadget_runtime(key, html)
+            if os.path.isfile(mshta):
+                # 以独立程序窗口运行（mshta HTA），先转换 gadget 为 IE/HTA 兼容版本
+                subprocess.Popen([mshta, runtime_html], startupinfo=C._startupinfo())
+                self.app.set_status(f"已打开小工具「{key}」（独立窗口）")
+                return
+            os.startfile(runtime_html)
         except Exception as e:
             messagebox.showerror(C.APP_NAME, f"打开失败: {e}")
 
@@ -282,8 +399,14 @@ class PageToys(tk.Frame):
             messagebox.showwarning(C.APP_NAME, "未找到小工具的可运行文件，无法自启动。")
             var.set(False)
             return
+        try:
+            runtime_html = _prepare_gadget_runtime(key, html)
+        except Exception as e:
+            messagebox.showwarning(C.APP_NAME, f"准备小工具运行环境失败：{e}")
+            var.set(False)
+            return
         mshta = _mshta_path()
-        cmd = f'"{mshta}" "{html}"' if os.path.isfile(mshta) else f'"{html}"'
+        cmd = f'"{mshta}" "{runtime_html}"' if os.path.isfile(mshta) else f'"{runtime_html}"'
         C._sync_autostart(v, GADGET_RUN_PREFIX + key, raw_cmd=cmd)
         self.app.set_status(f"小工具「{key}」开机自启动已{'开启' if v else '关闭'}")
 

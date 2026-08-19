@@ -19,7 +19,7 @@ import threading
 # 常量
 # ============================================================
 APP_NAME = "Windows++"
-VERSION = "4.0"
+VERSION = "4.0.1"
 
 UPDATE_TIMEOUT = 1800                       # 单软件更新超时（秒）
 INSTALLER_EXTS = {".exe", ".msi", ".msix", ".msixbundle", ".appx", ".appxbundle"}
@@ -671,6 +671,7 @@ class DesktopDragGuard:
     """
 
     _WH_MOUSE_LL = 14
+    WM_MOUSEMOVE = 0x0200
     WM_LBUTTONDOWN = 0x0201
     WM_LBUTTONDBLCLK = 0x0203
 
@@ -687,9 +688,8 @@ class DesktopDragGuard:
         self._cb = None
         self._thread_id = None
         self.enabled = False          # 锁定模式开关（由页面/主框架控制）
-        self._last_down = 0.0         # 上次按下时间（time.monotonic）
-        self._last_pt = None          # 上次按下坐标
-        self._grace_until = 0.0       # 双击放行截止时间
+        self._down_on_desktop = False # 当前左键是否按在桌面图标上
+        self._down_pt = None          # 按下时的坐标（用于判断拖拽位移）
 
     def set_enabled(self, flag):
         self.enabled = bool(flag)
@@ -741,24 +741,26 @@ class DesktopDragGuard:
         u = self._user32
         try:
             if n_code >= 0 and self.enabled:
-                now = time.monotonic()
                 if w_param == self.WM_LBUTTONDOWN:
-                    if now < self._grace_until:
-                        return self._next(n_code, w_param, l_param)   # 双击放行期
                     info = ctypes.cast(l_param,
                                        ctypes.POINTER(self._MSLLHOOKSTRUCT)).contents
-                    # 双击意图：第二次快速按下（同位置）→ 放行并进入双击放行期
-                    if (self._last_down and now - self._last_down < 0.6
-                            and self._last_pt is not None
-                            and abs(info.pt.x - self._last_pt.x) < 6
-                            and abs(info.pt.y - self._last_pt.y) < 6):
-                        self._grace_until = now + 0.7
-                        self._last_down = 0.0
-                        return self._next(n_code, w_param, l_param)
-                    self._last_down = now
-                    self._last_pt = (info.pt.x, info.pt.y)
-                    if self._on_desktop_icon(info.pt):
-                        return 1      # 吞掉单击：不可选中/不可拖动
+                    # 按下：放行（允许选中 / 双击打开），仅记录“是否按在桌面图标上”
+                    self._down_on_desktop = self._on_desktop_icon(info.pt)
+                    self._down_pt = (info.pt.x, info.pt.y) if self._down_on_desktop else None
+                    return self._next(n_code, w_param, l_param)
+                elif w_param == self.WM_MOUSEMOVE and self._down_on_desktop and self._down_pt:
+                    info = ctypes.cast(l_param,
+                                       ctypes.POINTER(self._MSLLHOOKSTRUCT)).contents
+                    dx = info.pt.x - self._down_pt[0]
+                    dy = info.pt.y - self._down_pt[1]
+                    # 位移超过约 4px → 判定为“拖拽”，吞掉移动消息以阻止拖动
+                    if dx * dx + dy * dy > 16:
+                        return 1
+                    return self._next(n_code, w_param, l_param)
+                elif w_param == self.WM_LBUTTONUP:
+                    self._down_on_desktop = False
+                    self._down_pt = None
+                    return self._next(n_code, w_param, l_param)
                 elif w_param == self.WM_LBUTTONDBLCLK:
                     return self._next(n_code, w_param, l_param)
         except Exception:
@@ -772,35 +774,68 @@ class DesktopDragGuard:
             return 0
 
     # ---------- 命中检测（只锁桌面图标，不误锁其他窗口；仅本地只读 API） ----------
-    def _on_desktop_icon(self, pt):
-        """判断鼠标按下位置是否位于“桌面图标”之上。
+    DESKTOP_CLASSES = {"SysListView32", "SHELLDLL_DefView", "WorkerW", "Progman", "Shell_DesktopWnd"}
 
-        用 WindowFromPoint 取鼠标下最顶层的窗口，仅当它是桌面窗口
-        （Progman 及其子窗口 SHELLDLL_DefView/SysListView32、壁纸层 WorkerW）
-        时才拦截 —— 软件窗口 / 截图工具等覆盖在桌面上时不会误锁。
-        全部使用只读 API，不发送任何跨进程消息（避免资源管理器死锁）。"""
-        try:
-            u = self._user32
-            u.WindowFromPoint.argtypes = [ctypes.POINTER(_DP_POINT)]
-            u.WindowFromPoint.restype = ctypes.c_void_p
-            hwnd = u.WindowFromPoint(ctypes.byref(pt))
-            if not hwnd:
-                # WindowFromPoint 不可用时（异常会话）保守放行，避免误锁
+    def _is_desktop_hwnd(self, hwnd):
+        """hwnd 或其父链任一节点为桌面类窗口则返回 True（只读 API）。"""
+        u = self._user32
+        u.GetParent.argtypes = [ctypes.c_void_p]
+        u.GetParent.restype = ctypes.c_void_p
+        u.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        u.GetClassNameW.restype = ctypes.c_int
+        h = hwnd
+        for _ in range(10):
+            if not h:
                 return False
-            # 沿父链取根窗口：根 == Progman（桌面宿主）则命中
-            u.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-            u.GetAncestor.restype = ctypes.c_void_p
-            u.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
-            u.FindWindowW.restype = ctypes.c_void_p
-            root = u.GetAncestor(hwnd, 2)  # GA_ROOT
-            prog = u.FindWindowW("Progman", None)
-            if root == prog:
-                return True
-            # 类名兜底（部分系统点击空白处返回 WorkerW 等）
             cls = ctypes.create_unicode_buffer(64)
-            u.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
-            u.GetClassNameW(hwnd, cls, 64)
-            return cls.value in ("Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32")
+            n = u.GetClassNameW(h, cls, 64)
+            if n > 0 and cls.value in self.DESKTOP_CLASSES:
+                return True
+            h = u.GetParent(h)
+        return False
+
+    def _topmost_window_at(self, pt):
+        """按 z 序（从最顶层向下）找到包含点 pt 的第一个可见顶层窗口句柄。
+
+        这是判定“该像素最上层是什么窗口”的可靠方法，完全不依赖
+        WindowFromPoint（后者在 UIPI / 会话隔离等情况下会返回 NULL）。
+        """
+        u = self._user32
+        u.GetTopWindow.argtypes = [ctypes.c_void_p]
+        u.GetTopWindow.restype = ctypes.c_void_p
+        u.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        u.GetWindow.restype = ctypes.c_void_p
+        u.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        u.IsWindowVisible.restype = ctypes.c_bool
+        u.IsIconic.argtypes = [ctypes.c_void_p]
+        u.IsIconic.restype = ctypes.c_bool
+        u.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.wintypes.RECT)]
+        u.GetWindowRect.restype = ctypes.c_bool
+        GW_HWNDNEXT = 2
+        hwnd = u.GetTopWindow(None)
+        while hwnd:
+            if u.IsWindowVisible(hwnd) and not u.IsIconic(hwnd):
+                r = ctypes.wintypes.RECT()
+                if u.GetWindowRect(hwnd, ctypes.byref(r)):
+                    if r.left <= pt.x <= r.right and r.top <= pt.y <= r.bottom:
+                        return hwnd
+            hwnd = u.GetWindow(hwnd, GW_HWNDNEXT)
+        return None
+
+    def _on_desktop_icon(self, pt):
+        """判断鼠标按下位置是否位于“桌面图标”之上（只锁图标，不误锁其他窗口）。
+
+        可靠做法：按 z 序找到该像素最顶层的可见窗口，若它是桌面类窗口
+        （Progman / WorkerW / SHELLDLL_DefView / SysListView32 等）或其父链
+        含桌面类，则判定为桌面点击并拦截；软件窗口 / 截图工具 / 任务栏等
+        覆盖在桌面之上时最顶层是它们自己，不会误锁。
+        全部为只读 API，不发送跨进程消息（避免资源管理器死锁）。
+        """
+        try:
+            top = self._topmost_window_at(pt)
+            if top and self._is_desktop_hwnd(top):
+                return True
+            return False
         except Exception:
             return False
 
