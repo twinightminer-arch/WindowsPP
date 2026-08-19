@@ -84,6 +84,7 @@ class App:
             ("uninstall", "🗑 软件卸载"),
             ("cleaner", "🧹 扫描清理"),
             ("desklock", "🔒 桌面锁定"),
+            ("recorder", "📹 录屏"),
             ("settings", "⚙ 设置"),
             ("toys", "🧸 工具与宠物"),
         ]
@@ -124,6 +125,7 @@ class App:
         from wpp.page_uninstall import PageUninstall
         from wpp.page_cleaner import PageCleaner
         from wpp.page_desklock import PageDeskLock
+        from wpp.page_recorder import PageRecorder
         from wpp.page_settings import PageSettings
         from wpp.page_toys import PageToys
         self.pages = {
@@ -131,6 +133,7 @@ class App:
             "uninstall": PageUninstall(self.page_holder, self),
             "cleaner": PageCleaner(self.page_holder, self),
             "desklock": PageDeskLock(self.page_holder, self),
+            "recorder": PageRecorder(self.page_holder, self),
             "settings": PageSettings(self.page_holder, self),
             "toys": PageToys(self.page_holder, self),
         }
@@ -152,7 +155,8 @@ class App:
             else:
                 b.configure(bg="#F3F3F3", fg="#374151", activebackground="#E5E7EB")
         names = {"updater": "软件更新", "uninstall": "软件卸载", "cleaner": "扫描清理",
-                 "desklock": "桌面锁定", "settings": "设置", "toys": "工具与宠物"}
+                 "desklock": "桌面锁定", "recorder": "录屏", "settings": "设置",
+                 "toys": "工具与宠物"}
         self._nav_lbl.configure(text=names.get(key, ""))
 
     # ---------- 主题 ----------

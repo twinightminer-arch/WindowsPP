@@ -19,7 +19,7 @@ import threading
 # 常量
 # ============================================================
 APP_NAME = "Windows++"
-VERSION = "3.1.1"
+VERSION = "4.0"
 
 UPDATE_TIMEOUT = 1800                       # 单软件更新超时（秒）
 INSTALLER_EXTS = {".exe", ".msi", ".msix", ".msixbundle", ".appx", ".appxbundle"}
@@ -401,6 +401,7 @@ def load_settings():
          "bg_image": "", "bg_video": "", "bg_opacity": 35, "bg_mute": False,
          "bg_music": "", "pet_path": "", "pet_autostart": False,
          "pet_selected": "", "pets": [],
+         "rec_dir": "", "rec_hotkey": "ctrl+h", "rec_region": "",
          "desk_locked_icons": []}
     try:
         import winreg
@@ -410,7 +411,9 @@ def load_settings():
                  ("BgVideo", "bg_video", str), ("BgOpacity", "bg_opacity", int),
                  ("BgMute", "bg_mute", bool), ("BgMusic", "bg_music", str),
                  ("PetPath", "pet_path", str), ("PetAutoStart", "pet_autostart", bool),
-                 ("PetSelected", "pet_selected", str)]
+                 ("PetSelected", "pet_selected", str),
+                 ("RecDir", "rec_dir", str), ("RecHotkey", "rec_hotkey", str),
+                 ("RecRegion", "rec_region", str)]
         for reg, name, conv in pairs:
             try:
                 v = winreg.QueryValueEx(key, reg)[0]
@@ -446,7 +449,8 @@ def save_settings(**kw):
         regs = [("IconLock", "icon_lock"), ("AutoStart", "autostart"), ("Theme", "theme"),
                 ("BgImage", "bg_image"), ("BgVideo", "bg_video"), ("BgOpacity", "bg_opacity"),
                 ("BgMute", "bg_mute"), ("BgMusic", "bg_music"), ("PetPath", "pet_path"),
-                ("PetAutoStart", "pet_autostart")]
+                ("PetAutoStart", "pet_autostart"), ("PetSelected", "pet_selected"),
+                ("RecDir", "rec_dir"), ("RecHotkey", "rec_hotkey"), ("RecRegion", "rec_region")]
         for reg, name in regs:
             v = cur[name]
             if isinstance(v, bool):
@@ -767,27 +771,36 @@ class DesktopDragGuard:
         except Exception:
             return 0
 
-    # ---------- 命中检测（仅本地只读 API，杜绝跨进程消息死锁） ----------
+    # ---------- 命中检测（只锁桌面图标，不误锁其他窗口；仅本地只读 API） ----------
     def _on_desktop_icon(self, pt):
-        """判断屏幕坐标是否落在“桌面图标宿主窗口（Progman）”内。
-        仅使用 FindWindowW / GetWindowRect 等只读 API（不发送任何跨进程
-        消息），从根本上避免鼠标钩子回调中同步 SendMessage 造成的
-        资源管理器死锁（explorer 崩溃重启循环）。"""
+        """判断鼠标按下位置是否位于“桌面图标”之上。
+
+        用 WindowFromPoint 取鼠标下最顶层的窗口，仅当它是桌面窗口
+        （Progman 及其子窗口 SHELLDLL_DefView/SysListView32、壁纸层 WorkerW）
+        时才拦截 —— 软件窗口 / 截图工具等覆盖在桌面上时不会误锁。
+        全部使用只读 API，不发送任何跨进程消息（避免资源管理器死锁）。"""
         try:
             u = self._user32
+            u.WindowFromPoint.argtypes = [ctypes.POINTER(_DP_POINT)]
+            u.WindowFromPoint.restype = ctypes.c_void_p
+            hwnd = u.WindowFromPoint(ctypes.byref(pt))
+            if not hwnd:
+                # WindowFromPoint 不可用时（异常会话）保守放行，避免误锁
+                return False
+            # 沿父链取根窗口：根 == Progman（桌面宿主）则命中
+            u.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            u.GetAncestor.restype = ctypes.c_void_p
             u.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
             u.FindWindowW.restype = ctypes.c_void_p
+            root = u.GetAncestor(hwnd, 2)  # GA_ROOT
             prog = u.FindWindowW("Progman", None)
-            if not prog:
-                return False
-
-            class _RECT(ctypes.Structure):
-                _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
-                            ("r", ctypes.c_long), ("b", ctypes.c_long)]
-            r = _RECT()
-            u.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT)]
-            u.GetWindowRect(prog, ctypes.byref(r))
-            return r.l <= pt.x < r.r and r.t <= pt.y < r.b
+            if root == prog:
+                return True
+            # 类名兜底（部分系统点击空白处返回 WorkerW 等）
+            cls = ctypes.create_unicode_buffer(64)
+            u.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+            u.GetClassNameW(hwnd, cls, 64)
+            return cls.value in ("Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32")
         except Exception:
             return False
 
