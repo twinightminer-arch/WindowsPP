@@ -7,6 +7,11 @@ __pycache__/
 *.zip
 Windows++ 使用说明.docx
 
+# PyInstaller
+build/
+dist/
+*.spec
+
 # 日志与临时文件
 *.log
 *.tmp
