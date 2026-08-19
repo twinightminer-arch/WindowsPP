@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""wpp.page_toys — 桌面工具与宠物页（v4.0.2）。
+"""wpp.page_toys — 桌面工具与宠物页。
 
 桌面工具：
-  直接复用本机 8GadgetPack 的小工具代码/文件/界面（Win7 经典 gadget），
-  但**不启用 8GadgetPack 的侧边栏**——小工具由我们自己的 mshta 窗口承载显示。
+  复用 Windows 7 经典桌面小工具（gadget）的代码/文件/界面，由 Windows++ 自己的 mshta 窗口承载显示，
+  不依赖外部侧边栏。
   - 内置 5 个经典小工具（Clock/Calendar/CPU/PicturePuzzle/SlideShow）随程序分发；
-  - 可一键从本机已装的 8GadgetPack 导入全部小工具（照搬其文件到本模块私有目录）；
+  - 可一键导入本机已装的小工具（照搬 gadget 文件到本模块私有目录）；
   - 打开 = 以独立程序窗口运行（mshta），并注入 Windows 7 Sidebar System 对象兼容 stub。
 宠物：
   宠物库（默认 FeibiPet + 用户导入），以中等图标网格展示供选择；
@@ -51,7 +51,7 @@ def _builtin_gadgets_dir():
 
 
 def _user_gadgets_dir():
-    """本机 8GadgetPack 已安装的小工具目录（只读参考，可选导入）。"""
+    """本机已安装的小工具目录（只读参考，可选导入）。"""
     local = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
     return os.path.join(local, "Microsoft", "Windows Sidebar", "Gadgets")
 
@@ -164,8 +164,8 @@ def _ensure_builtins():
             pass
 
 
-def _import_all_from_8gp():
-    """把本机 8GadgetPack 已安装的全部小工具照搬进本模块私有目录。"""
+def _import_all_from_system():
+    """把本机已安装的全部小工具照搬进本模块私有目录。"""
     src = _user_gadgets_dir()
     if not os.path.isdir(src):
         return 0
@@ -198,10 +198,16 @@ def _make_system_stub(runtime_dir, key):
     runtime_dir_js = runtime_dir.replace("\\", "/")
     return rf'''<script>
 (function(){{
-  // wpp_stub_v2
+  if (window.System && window.System._wpp_stub_v3) return;
+  // wpp_stub_v3
   var stubStorage = {{}};
   var stubTimeZones = {{count: 0, item: function(i){{ return null; }}}};
-  window.System = window.System || {{
+  var wsh = null;
+  try {{ wsh = new ActiveXObject("WScript.Shell"); }} catch(e) {{}}
+  var shellApp = null;
+  try {{ shellApp = new ActiveXObject("Shell.Application"); }} catch(e) {{}}
+  window.System = {{
+    _wpp_stub_v3: true,
     Gadget: {{
       path: "{runtime_dir_js}/app",
       name: "{key}",
@@ -216,13 +222,44 @@ def _make_system_stub(runtime_dir, key):
       settingsUI: "",
       onSettingsClosed: null,
       onSettingsClosing: null,
-      visibilityChanged: null
+      visibilityChanged: null,
+      dockingChanged: null,
+      onUndock: null,
+      onDock: null,
+      docked: true,
+      undocked: false
     }},
     Time: {{
       now: function(){{ return new Date(); }},
       timeZones: stubTimeZones
     }},
-    Shell: {{}}
+    Environment: {{
+      getEnvironmentVariable: function(name){{
+        if (!wsh) return "";
+        try {{ return wsh.ExpandEnvironmentStrings("%" + name + "%"); }} catch(e) {{ return ""; }}
+      }}
+    }},
+    Debug: {{
+      outputString: function(s){{ try{{ if (window.console && console.log) console.log(s); }}catch(e){{}} }}
+    }},
+    Shell: {{
+      execute: function(file, args, dir, op, show){{
+        if (!wsh) return;
+        try {{
+          var cmd = '"' + file + '"';
+          if (args) cmd += ' ' + args;
+          wsh.Run(cmd, show === undefined ? 1 : show, false);
+        }} catch(e) {{}}
+      }},
+      executeCommand: function(cmd){{
+        if (!wsh) return;
+        try {{ wsh.Run(cmd, 1, false); }} catch(e) {{}}
+      }},
+      run: function(cmd){{
+        if (!wsh) return;
+        try {{ wsh.Run(cmd, 1, false); }} catch(e) {{}}
+      }}
+    }}
   }};
   // mshta/IE 早期可能未暴露 HTMLDivElement/HTMLImageElement，统一做兜底
   var divProto = (typeof HTMLDivElement !== 'undefined' && HTMLDivElement.prototype)
@@ -282,7 +319,13 @@ def _transform_gadget_html(html_path, runtime_dir, key):
         with open(html_path, "r", encoding="utf-8", errors="ignore") as f:
             text = f.read()
     stub = _make_system_stub(runtime_dir, key)
-    if "</head>" in text:
+    # 必须把 System stub 放到 <head> 最前面，保证在原本引用的 shared.js/launcher.js 之前执行。
+    # 优先在 <head ...> 标签结束后立即插入；没有 <head> 则 fallback 到文件开头。
+    m = re.search(r'<head\b[^>]*>', text, re.I)
+    if m:
+        insert_pos = m.end()
+        text = text[:insert_pos] + "\n" + stub + "\n" + text[insert_pos:]
+    elif "</head>" in text:
         text = text.replace("</head>", stub + "\n</head>", 1)
     else:
         text = stub + "\n" + text
@@ -311,8 +354,8 @@ def _prepare_gadget_runtime(key, html):
     if os.path.isfile(existing):
         try:
             with open(existing, "r", encoding="utf-16", errors="ignore") as f:
-                if "wpp_stub_v2" in f.read():
-                    return existing          # 已转换（v2 stub），直接复用
+                if "wpp_stub_v3" in f.read():
+                    return existing          # 已转换（v3 stub），直接复用
         except Exception:
             pass
     if os.path.isdir(runtime_app):
@@ -366,17 +409,17 @@ class PageToys(tk.Frame):
 
     # ---------- UI ----------
     def _build_ui(self):
-        # 工具区：本模块自带的小工具库（源自 8GadgetPack 的 gadget 代码/界面）
-        f1 = ttk.LabelFrame(self, text="🧰 桌面工具（Win7 经典小工具，本程序独立承载）", padding=8)
+        # 工具区：本模块自带的小工具库
+        f1 = ttk.LabelFrame(self, text="🧰 桌面工具（Windows 7 经典小工具，本程序独立承载）", padding=8)
         f1.pack(fill="both", expand=True, padx=10, pady=(10, 6))
         ttk.Label(f1,
-                  text="以下小工具直接复用本机 8GadgetPack 的小工具代码与界面（Win7 经典 gadget），"
-                       "但由 Windows++ 自己的窗口承载显示，不启用 8GadgetPack 的侧边栏。"
+                  text="以下小工具直接复用 Windows 7 经典小工具（gadget）的代码与界面，"
+                       "由 Windows++ 自己的窗口承载显示，不依赖外部侧边栏。"
                        "点击「▶ 打开」即以独立窗口运行该小工具。",
                   foreground="#555", wraplength=1000).pack(anchor="w", pady=(0, 6))
         row = ttk.Frame(f1)
         row.pack(fill="x", pady=(0, 6))
-        ttk.Button(row, text="📥 从 8GadgetPack 导入全部小工具",
+        ttk.Button(row, text="📥 从本机导入全部小工具",
                    command=self._import_all).pack(side="left")
         self.gadget_status = ttk.Label(row, text="", foreground="#888")
         self.gadget_status.pack(side="left", padx=10)
@@ -456,10 +499,10 @@ class PageToys(tk.Frame):
     # ---------- 小工具：导入 / 打开 / 卸载 / 自启动 ----------
     def _import_all(self):
         self.gadget_status.configure(text="导入中…", foreground="#B45309")
-        self.app.set_status("正在从 8GadgetPack 导入全部小工具…")
+        self.app.set_status("正在从本机导入全部小工具…")
 
         def worker():
-            n = _import_all_from_8gp()
+            n = _import_all_from_system()
             self.root.after(0, lambda: self._import_done(n))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -468,7 +511,7 @@ class PageToys(tk.Frame):
         self.gadget_status.configure(
             text=f"已导入 {n} 个小工具" if n else "没有可导入的新小工具",
             foreground="#16A34A" if n else "#888")
-        self.app.set_status(f"从 8GadgetPack 导入完成：{n} 个")
+        self.app.set_status(f"从本机导入完成：{n} 个")
         self.refresh()
 
     def _open(self, g):
