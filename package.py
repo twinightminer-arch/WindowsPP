@@ -9,7 +9,7 @@ from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "4.0.1"
+VERSION = "4.0.2"
 
 import ctypes
 _buf = ctypes.create_unicode_buffer(260)
@@ -157,9 +157,11 @@ def build_docx(path):
     para(doc, "说明：录屏基于系统 ffmpeg（gdigrab/dshow），需安装 ffmpeg 并加入 PATH（https://ffmpeg.org）。")
 
     h(doc, "十一、工具与宠物")
-    para(doc, "工具：内置 Windows 7 经典小工具库（时钟/日历/CPU 仪表盘/天气/货币/资讯/幻灯片/拼图），"
-              "点击「📥 安装」联网下载并解压到本地（%LOCALAPPDATA%\\WindowsPP\\gadgets），「▶ 打开」以独立程序窗口运行，"
-              "支持卸载与开机自启动。提示：Windows 10/11 已移除侧边栏平台，小工具以兼容方式显示。")
+    para(doc, "工具：本程序自带 Windows 7 经典小工具库（时钟/日历/CPU 仪表盘/幻灯片/拼图等），"
+              "直接复用本机 8GadgetPack 的小工具代码与界面，但由 Windows++ 自己的窗口承载显示，"
+              "不启用 8GadgetPack 的侧边栏。点击「▶ 打开」即以独立程序窗口运行该小工具；"
+              "也可一键「📥 从 8GadgetPack 导入全部小工具」，把本机已装的小工具照搬进本程序。"
+              "支持卸载与开机自启动。")
     para(doc, "宠物：宠物库管理（默认 FeibiPet + 用户导入，持久化），中等图标网格展示供点选；"
               "打开/关闭与开机自启动针对当前所选宠物。")
 
@@ -169,7 +171,7 @@ def build_docx(path):
         ("更新失败怎么办？", "看下方日志错误尾巴。常见原因：软件正在运行、需要管理员权限、网络问题。"
          "可稍后手动执行：winget upgrade --id <ID> -e"),
         ("部分软件状态是「—」（灰色）？", "winget 未收录该软件的更新信息，无法自动判定/升级，属正常现象。"),
-        ("小工具下载失败？", "检查网络连接后重试；下载源为 Win7 官方小工具存档（GitHub Pages），一般可直接访问。"),
+        ("小工具打开报错？", "小工具以 mshta 独立窗口运行，已注入兼容 Win7 Sidebar 的 System 对象 stub；若个别小工具依赖特殊接口，可能显示异常，可改用「从 8GadgetPack 导入」的同源文件重试。"),
         ("录屏无法开始？", "请确认已安装 ffmpeg 并加入 PATH（ffmpeg -version 可验证）；若音频设备不可用会自动仅录画面。"),
         ("背景图片不显示？", "图片缩放/透明度需要 pillow（pip install pillow）；未安装时显示原尺寸。"),
         ("桌面锁定拦不住拖拽？", "v4.0.1 起已通过鼠标钩子直接拦截桌面图标的拖拽，锁定后图标无法被拖动；若仍想从系统层彻底禁止排列变化，可同时开启「全局锁定（自动排列）」。"),
@@ -196,7 +198,7 @@ def build_docx(path):
 
 
 def collect_source_files():
-    """收集源码与资源文件（含 wpp 包递归）。"""
+    """收集源码与资源文件（含 wpp 包递归 + 内置小工具）。"""
     files = ["WindowsPP.py", "wpp_tools.py", "WindowsPP.ico",
              "启动WindowsPP.bat", "make_icon.py", "make_shortcut.py",
              "README.md", "LICENSE"]
@@ -204,6 +206,16 @@ def collect_source_files():
     for root, dirs, names in os.walk(wpp_dir):
         for n in names:
             if n.endswith(".py"):
+                full = os.path.join(root, n)
+                rel = os.path.relpath(full, BASE).replace("\\", "/")
+                files.append(rel)
+    # 内置小工具（gadgets/*.Gadget）
+    gadgets_dir = os.path.join(BASE, "gadgets")
+    if os.path.isdir(gadgets_dir):
+        for root, dirs, names in os.walk(gadgets_dir):
+            # 排除运行时生成目录
+            dirs[:] = [d for d in dirs if d != "runtime"]
+            for n in names:
                 full = os.path.join(root, n)
                 rel = os.path.relpath(full, BASE).replace("\\", "/")
                 files.append(rel)
