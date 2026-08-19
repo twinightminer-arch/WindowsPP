@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+import ctypes
 import shutil
 import subprocess
 import threading
@@ -18,7 +19,7 @@ import threading
 # 常量
 # ============================================================
 APP_NAME = "Windows++"
-VERSION = "3.0"
+VERSION = "3.1"
 
 UPDATE_TIMEOUT = 1800                       # 单软件更新超时（秒）
 INSTALLER_EXTS = {".exe", ".msi", ".msix", ".msixbundle", ".appx", ".appxbundle"}
@@ -399,6 +400,7 @@ def load_settings():
     d = {"icon_lock": False, "autostart": False, "theme": "",
          "bg_image": "", "bg_video": "", "bg_opacity": 35, "bg_mute": False,
          "bg_music": "", "pet_path": "", "pet_autostart": False,
+         "pet_selected": "", "pets": [],
          "desk_locked_icons": []}
     try:
         import winreg
@@ -407,7 +409,8 @@ def load_settings():
                  ("Theme", "theme", str), ("BgImage", "bg_image", str),
                  ("BgVideo", "bg_video", str), ("BgOpacity", "bg_opacity", int),
                  ("BgMute", "bg_mute", bool), ("BgMusic", "bg_music", str),
-                 ("PetPath", "pet_path", str), ("PetAutoStart", "pet_autostart", bool)]
+                 ("PetPath", "pet_path", str), ("PetAutoStart", "pet_autostart", bool),
+                 ("PetSelected", "pet_selected", str)]
         for reg, name, conv in pairs:
             try:
                 v = winreg.QueryValueEx(key, reg)[0]
@@ -419,12 +422,14 @@ def load_settings():
                     d[name] = str(v)
             except OSError:
                 pass
-        try:
-            v, t = winreg.QueryValueEx(key, "DeskLockIcons")
-            if t == winreg.REG_MULTI_SZ:
-                d["desk_locked_icons"] = [x for x in v if x]
-        except OSError:
-            pass
+        for reg, name in (("DeskLockIcons", "desk_locked_icons"),
+                          ("Pets", "pets")):
+            try:
+                v, t = winreg.QueryValueEx(key, reg)
+                if t == winreg.REG_MULTI_SZ:
+                    d[name] = [x for x in v if x]
+            except OSError:
+                pass
         winreg.CloseKey(key)
     except OSError:
         pass
@@ -452,6 +457,10 @@ def save_settings(**kw):
                 winreg.SetValueEx(key, reg, 0, winreg.REG_SZ, str(v))
         locked = [x for x in cur.get("desk_locked_icons") or [] if x]
         winreg.SetValueEx(key, "DeskLockIcons", 0, winreg.REG_MULTI_SZ, locked)
+        pets = [x for x in cur.get("pets") or [] if x]
+        winreg.SetValueEx(key, "Pets", 0, winreg.REG_MULTI_SZ, pets)
+        if cur.get("pet_selected"):
+            winreg.SetValueEx(key, "PetSelected", 0, winreg.REG_SZ, str(cur["pet_selected"]))
         winreg.CloseKey(key)
     except OSError:
         pass
@@ -639,6 +648,169 @@ class DesktopMonitor(threading.Thread):
             if next_off == 0:
                 break
             off += next_off
+
+
+# ============================================================
+# 桌面图标拖拽拦截（WH_MOUSE_LL 低级鼠标钩子，真正阻止移动）
+# ============================================================
+class _DP_POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class DesktopDragGuard:
+    """桌面图标锁定引擎。
+
+    原理：安装低级鼠标钩子（WH_MOUSE_LL）。锁定模式下，对桌面图标区域
+    （SysListView32）的“单击按下”事件直接吞掉 —— 图标无法被选中、无法被
+    拖动，从根本上阻止移动；“双击”会被识别并放行（双击仍可正常打开软件）。
+    无需读取图标名（桌面列表为 owner-draw 虚拟列表，跨进程取文本不可行）。
+    """
+
+    _WH_MOUSE_LL = 14
+    WM_LBUTTONDOWN = 0x0201
+    WM_LBUTTONDBLCLK = 0x0203
+    LVM_HITTEST = 0x1012          # LVM_FIRST + 18
+
+    class _MSLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [("pt", _DP_POINT), ("mouseData", ctypes.c_ulong),
+                    ("flags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                    ("dwExtraInfo", ctypes.c_void_p)]
+
+    class _LVHITTESTINFO(ctypes.Structure):
+        _fields_ = [("pt", _DP_POINT), ("flags", ctypes.c_uint),
+                    ("iItem", ctypes.c_int), ("iSubItem", ctypes.c_int)]
+
+    def __init__(self):
+        self._hook = None
+        self._thread = None
+        self._user32 = ctypes.windll.user32
+        self._kernel32 = ctypes.windll.kernel32
+        self._cb = None
+        self._thread_id = None
+        self.enabled = False          # 锁定模式开关（由页面/主框架控制）
+        self._last_down = 0.0         # 上次按下时间（time.monotonic）
+        self._last_pt = None          # 上次按下坐标
+        self._grace_until = 0.0       # 双击放行截止时间
+
+    def set_enabled(self, flag):
+        self.enabled = bool(flag)
+        return self
+
+    def start(self):
+        if self._thread is not None:
+            return True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self):
+        t = self._thread
+        self._thread = None
+        if t is not None and self._thread_id:
+            try:
+                self._user32.PostThreadMessageW(self._thread_id, 0x0012, 0, 0)  # WM_QUIT
+            except Exception:
+                pass
+
+    # ---------- 钩子线程 ----------
+    def _run(self):
+        from ctypes import wintypes
+        u = self._user32
+        self._thread_id = self._kernel32.GetCurrentThreadId()
+        CMPFUNC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int,
+                                     ctypes.c_void_p, ctypes.c_void_p)
+        self._cb = CMPFUNC(self._proc)
+        # 低级钩子（WH_MOUSE_LL）：回调位于当前进程内时 hMod 传 NULL 即可
+        self._hook = u.SetWindowsHookExW(self._WH_MOUSE_LL, self._cb, None, 0)
+        if not self._hook:
+            self._hook = None
+            return
+        msg = wintypes.MSG()
+        try:
+            while u.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
+                u.TranslateMessage(ctypes.byref(msg))
+                u.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            try:
+                u.UnhookWindowsHookEx(self._hook)
+            except Exception:
+                pass
+            self._hook = None
+
+    # ---------- 回调 ----------
+    def _proc(self, n_code, w_param, l_param):
+        u = self._user32
+        try:
+            if n_code >= 0 and self.enabled:
+                now = time.monotonic()
+                if w_param == self.WM_LBUTTONDOWN:
+                    if now < self._grace_until:
+                        return self._next(n_code, w_param, l_param)   # 双击放行期
+                    info = ctypes.cast(l_param,
+                                       ctypes.POINTER(self._MSLLHOOKSTRUCT)).contents
+                    # 双击意图：第二次快速按下（同位置）→ 放行并进入双击放行期
+                    if (self._last_down and now - self._last_down < 0.6
+                            and self._last_pt is not None
+                            and abs(info.pt.x - self._last_pt.x) < 6
+                            and abs(info.pt.y - self._last_pt.y) < 6):
+                        self._grace_until = now + 0.7
+                        self._last_down = 0.0
+                        return self._next(n_code, w_param, l_param)
+                    self._last_down = now
+                    self._last_pt = (info.pt.x, info.pt.y)
+                    if self._on_desktop_icon(info.pt):
+                        return 1      # 吞掉单击：不可选中/不可拖动
+                elif w_param == self.WM_LBUTTONDBLCLK:
+                    return self._next(n_code, w_param, l_param)
+        except Exception:
+            pass
+        return self._next(n_code, w_param, l_param)
+
+    def _next(self, n_code, w_param, l_param):
+        try:
+            return self._user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+        except Exception:
+            return 0
+
+    # ---------- 命中检测（仅判定是否落在桌面图标上） ----------
+    def _on_desktop_icon(self, pt):
+        lv = self._find_desktop_listview()
+        if not lv:
+            return False
+        u = self._user32
+        u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                   ctypes.c_void_p, ctypes.c_void_p]
+        u.SendMessageW.restype = ctypes.c_long
+        client = _DP_POINT(pt.x, pt.y)
+        u.ScreenToClient(lv, ctypes.byref(client))
+        hti = self._LVHITTESTINFO()
+        hti.pt.x, hti.pt.y = client.x, client.y
+        hti.iItem = -1
+        idx = u.SendMessageW(lv, self.LVM_HITTEST, 0, ctypes.byref(hti))
+        return idx >= 0
+
+    def _find_desktop_listview(self):
+        u = self._user32
+        u.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        u.FindWindowW.restype = ctypes.c_void_p
+        u.FindWindowExW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_wchar_p, ctypes.c_wchar_p]
+        u.FindWindowExW.restype = ctypes.c_void_p
+        prog = u.FindWindowW("Progman", None)
+        lv = 0
+        if prog:
+            def_view = u.FindWindowExW(prog, 0, "SHELLDLL_DefView", None)
+            if not def_view:
+                # 兼容部分系统：Progman -> WorkerW -> SHELLDLL_DefView
+                worker = u.FindWindowExW(prog, 0, "WorkerW", None)
+                while worker:
+                    def_view = u.FindWindowExW(worker, 0, "SHELLDLL_DefView", None)
+                    if def_view:
+                        break
+                    worker = u.FindWindowExW(prog, worker, "WorkerW", None)
+            if def_view:
+                lv = u.FindWindowExW(def_view, 0, "SysListView32", None)
+        return lv or None
 
 
 # ============================================================

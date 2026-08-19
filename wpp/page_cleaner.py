@@ -122,6 +122,9 @@ class PageCleaner(tk.Frame):
                 r["checked"] = not r["checked"]
                 self.tree.set(item, "chk", "✔" if r["checked"] else "")
                 break
+        # 同步“清理选中”按钮状态：只要有勾选项即可点击
+        self.clean_btn.configure(
+            state="normal" if any(r["checked"] for r in self.results) else "disabled")
 
     def _poll(self):
         try:

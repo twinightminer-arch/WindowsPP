@@ -31,6 +31,11 @@ class App:
         self._monitor = None
         self._last_monitor_prompt = 0.0
 
+        # 桌面拖拽拦截引擎
+        self.drag_guard = C.DesktopDragGuard()
+        self.drag_guard.start()
+        self.update_drag_guard()
+
         # 背景视频 / 音乐状态
         self._bg_canvas = None
         self._music_on = False
@@ -264,6 +269,12 @@ class App:
         self.root.after(1500, self._music_loop)
 
     # ---------- 状态栏 ----------
+    def update_drag_guard(self):
+        """按当前配置启停桌面图标拖拽拦截（锁定图标非空 或 全局锁定开启）。"""
+        s = self.settings
+        locked = bool(s.get("desk_locked_icons")) or bool(s.get("icon_lock"))
+        self.drag_guard.set_enabled(locked)
+
     def set_status(self, text):
         self.status_lbl.configure(text=text)
 

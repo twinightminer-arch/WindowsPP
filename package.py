@@ -9,7 +9,7 @@ from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "3.0"
+VERSION = "3.1"
 
 import ctypes
 _buf = ctypes.create_unicode_buffer(260)

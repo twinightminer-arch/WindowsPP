@@ -55,10 +55,10 @@ class PageDeskLock(tk.Frame):
         self.tree.tag_configure("free", foreground="#333333")
 
         hint = ttk.Label(self,
-                         text="点击「🔒」列可单独锁定/解锁某个图标。锁定后：该图标被移动、删除或重命名时，"
-                              "程序会弹窗提示“桌面图标已锁定”，并可一键前往解锁。\n"
-                              "说明：Windows 未提供阻止拖拽的官方接口，真正的“禁止移动”需配合上方全局锁定"
-                              "（自动排列）使用。",
+                         text="点击「🔒」列可单独锁定/解锁某个图标；锁定任意图标后，桌面进入锁定模式："
+                              "图标无法被选中与拖动（从根本上阻止移动），双击仍可正常打开软件，"
+                              "解锁全部图标即恢复。\n"
+                              "顶部「全局锁定」开关：同时启用桌面图标自动排列。",
                          foreground="#888", padding=(10, 4), wraplength=1000)
         hint.pack(fill="x")
 
@@ -117,12 +117,18 @@ class PageDeskLock(tk.Frame):
 
     def _save(self):
         self.app.settings = C.save_settings(desk_locked_icons=sorted(self.locked))
+        self.app.update_drag_guard()
+        if self.locked:
+            self.app.set_status(f"桌面图标锁定模式已启用：已锁定 {len(self.locked)} 个图标，图标不可拖动")
+        else:
+            self.app.set_status("已解锁全部图标，桌面恢复可拖动")
 
     # ---------- 全局锁定 ----------
     def _on_global(self):
         v = self.global_var.get()
         ok, msg = C.set_desktop_icon_lock(v)
         self.app.settings = C.save_settings(icon_lock=v)
+        self.app.update_drag_guard()
         self.app.set_status(msg)
         if ok:
             messagebox.showinfo(
