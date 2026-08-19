@@ -19,7 +19,7 @@ import threading
 # 常量
 # ============================================================
 APP_NAME = "Windows++"
-VERSION = "3.1"
+VERSION = "3.1.1"
 
 UPDATE_TIMEOUT = 1800                       # 单软件更新超时（秒）
 INSTALLER_EXTS = {".exe", ".msi", ".msix", ".msixbundle", ".appx", ".appxbundle"}
@@ -669,16 +669,11 @@ class DesktopDragGuard:
     _WH_MOUSE_LL = 14
     WM_LBUTTONDOWN = 0x0201
     WM_LBUTTONDBLCLK = 0x0203
-    LVM_HITTEST = 0x1012          # LVM_FIRST + 18
 
     class _MSLLHOOKSTRUCT(ctypes.Structure):
         _fields_ = [("pt", _DP_POINT), ("mouseData", ctypes.c_ulong),
                     ("flags", ctypes.c_ulong), ("time", ctypes.c_ulong),
                     ("dwExtraInfo", ctypes.c_void_p)]
-
-    class _LVHITTESTINFO(ctypes.Structure):
-        _fields_ = [("pt", _DP_POINT), ("flags", ctypes.c_uint),
-                    ("iItem", ctypes.c_int), ("iSubItem", ctypes.c_int)]
 
     def __init__(self):
         self._hook = None
@@ -772,45 +767,29 @@ class DesktopDragGuard:
         except Exception:
             return 0
 
-    # ---------- 命中检测（仅判定是否落在桌面图标上） ----------
+    # ---------- 命中检测（仅本地只读 API，杜绝跨进程消息死锁） ----------
     def _on_desktop_icon(self, pt):
-        lv = self._find_desktop_listview()
-        if not lv:
-            return False
-        u = self._user32
-        u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
-                                   ctypes.c_void_p, ctypes.c_void_p]
-        u.SendMessageW.restype = ctypes.c_long
-        client = _DP_POINT(pt.x, pt.y)
-        u.ScreenToClient(lv, ctypes.byref(client))
-        hti = self._LVHITTESTINFO()
-        hti.pt.x, hti.pt.y = client.x, client.y
-        hti.iItem = -1
-        idx = u.SendMessageW(lv, self.LVM_HITTEST, 0, ctypes.byref(hti))
-        return idx >= 0
+        """判断屏幕坐标是否落在“桌面图标宿主窗口（Progman）”内。
+        仅使用 FindWindowW / GetWindowRect 等只读 API（不发送任何跨进程
+        消息），从根本上避免鼠标钩子回调中同步 SendMessage 造成的
+        资源管理器死锁（explorer 崩溃重启循环）。"""
+        try:
+            u = self._user32
+            u.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+            u.FindWindowW.restype = ctypes.c_void_p
+            prog = u.FindWindowW("Progman", None)
+            if not prog:
+                return False
 
-    def _find_desktop_listview(self):
-        u = self._user32
-        u.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
-        u.FindWindowW.restype = ctypes.c_void_p
-        u.FindWindowExW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                    ctypes.c_wchar_p, ctypes.c_wchar_p]
-        u.FindWindowExW.restype = ctypes.c_void_p
-        prog = u.FindWindowW("Progman", None)
-        lv = 0
-        if prog:
-            def_view = u.FindWindowExW(prog, 0, "SHELLDLL_DefView", None)
-            if not def_view:
-                # 兼容部分系统：Progman -> WorkerW -> SHELLDLL_DefView
-                worker = u.FindWindowExW(prog, 0, "WorkerW", None)
-                while worker:
-                    def_view = u.FindWindowExW(worker, 0, "SHELLDLL_DefView", None)
-                    if def_view:
-                        break
-                    worker = u.FindWindowExW(prog, worker, "WorkerW", None)
-            if def_view:
-                lv = u.FindWindowExW(def_view, 0, "SysListView32", None)
-        return lv or None
+            class _RECT(ctypes.Structure):
+                _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                            ("r", ctypes.c_long), ("b", ctypes.c_long)]
+            r = _RECT()
+            u.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT)]
+            u.GetWindowRect(prog, ctypes.byref(r))
+            return r.l <= pt.x < r.r and r.t <= pt.y < r.b
+        except Exception:
+            return False
 
 
 # ============================================================
