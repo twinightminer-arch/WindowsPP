@@ -144,13 +144,13 @@ class PageSettings(tk.Frame):
             filetypes=[("图片", "*.png *.jpg *.jpeg *.bmp *.gif"), ("所有文件", "*.*")])
         if not path:
             return
-        if not _has_pil():
-            messagebox.showwarning(C.APP_NAME,
-                                   "未检测到 pillow 库，无法缩放/调整图片透明度。\n"
-                                   "可运行 pip install pillow 后重试（图片仍会作为背景显示为原尺寸）。")
         self.app.settings = C.save_settings(bg_image=path)
         self.app._bg_apply()
         self.bg_image_lbl.configure(text=os.path.basename(path))
+        if not _has_pil():
+            messagebox.showwarning(C.APP_NAME,
+                                   "未检测到 pillow 库，图片将以原尺寸显示。\n"
+                                   "缩放/透明度功能需要 pillow（pip install pillow）。")
         self.app.set_status(f"背景图片已设置: {os.path.basename(path)}")
 
     def _remove_image(self):

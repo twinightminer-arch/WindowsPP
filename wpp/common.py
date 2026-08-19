@@ -19,7 +19,7 @@ import threading
 # 常量
 # ============================================================
 APP_NAME = "Windows++"
-VERSION = "4.0.3"
+VERSION = "4.0.4"
 
 UPDATE_TIMEOUT = 1800                       # 单软件更新超时（秒）
 INSTALLER_EXTS = {".exe", ".msi", ".msix", ".msixbundle", ".appx", ".appxbundle"}
@@ -825,13 +825,22 @@ class DesktopDragGuard:
     def _on_desktop_icon(self, pt):
         """判断鼠标按下位置是否位于“桌面图标”之上（只锁图标，不误锁其他窗口）。
 
-        可靠做法：按 z 序找到该像素最顶层的可见窗口，若它是桌面类窗口
-        （Progman / WorkerW / SHELLDLL_DefView / SysListView32 等）或其父链
-        含桌面类，则判定为桌面点击并拦截；软件窗口 / 截图工具 / 任务栏等
-        覆盖在桌面之上时最顶层是它们自己，不会误锁。
+        优先使用 WindowFromPoint 获取该像素处窗口，再沿父链检查是否为桌面类窗口
+        （Progman / WorkerW / SHELLDLL_DefView / SysListView32 等）。
+        若 WindowFromPoint 返回 NULL（UIPI 等），回退到按 z 序枚举顶层窗口。
+        软件窗口 / 截图工具 / 任务栏等覆盖在桌面之上时最顶层是它们自己，不会误锁。
         全部为只读 API，不发送跨进程消息（避免资源管理器死锁）。
         """
         try:
+            u = self._user32
+            u.WindowFromPoint.argtypes = [self._DP_POINT]
+            u.WindowFromPoint.restype = ctypes.c_void_p
+            # 先尝试 WindowFromPoint（最准确）
+            p = self._DP_POINT(pt.x, pt.y)
+            hwnd = u.WindowFromPoint(p)
+            if hwnd and self._is_desktop_hwnd(hwnd):
+                return True
+            # 回退：枚举顶层窗口
             top = self._topmost_window_at(pt)
             if top and self._is_desktop_hwnd(top):
                 return True

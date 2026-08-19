@@ -214,8 +214,14 @@ class App:
                 self._bg_label.configure(image=self._bg_img)
                 self._bg_applied = img_path
             except Exception:
-                self._bg_label.configure(image="", text="")
-                self._bg_applied = ""
+                # PIL 不可用时用 tk.PhotoImage 原尺寸显示（png/gif）
+                try:
+                    self._bg_img = tk.PhotoImage(file=img_path)
+                    self._bg_label.configure(image=self._bg_img)
+                    self._bg_applied = img_path
+                except Exception:
+                    self._bg_label.configure(image="", text="")
+                    self._bg_applied = ""
         elif not img_path:
             self._bg_label.configure(image="", text="")
             self._bg_applied = ""
