@@ -104,15 +104,20 @@ class App:
         right = tk.Frame(main)
         right.pack(side="left", fill="both", expand=True)
 
-        # 背景层（先创建，位于最底）：用 Canvas 承载图片，page_holder 透明叠加其上
+        # 背景层（先创建，位于最底）：用 Canvas 承载图片，page_holder 尽量透明叠加其上
         self._bg_frame = tk.Frame(right, bg="#FFFFFF")
         self._bg_frame.pack(fill="both", expand=True)
         self._bg_canvas = tk.Canvas(self._bg_frame, bg="#FFFFFF",
                                     highlightthickness=0, bd=0)
         self._bg_canvas.place(relwidth=1, relheight=1)
 
-        self.page_holder = tk.Frame(self._bg_frame, bg="systemTransparent")
+        # 透明可能不被支持（Tk 8.6 无 systemTransparent 时抛 TclError），安全降级为白底
+        self.page_holder = tk.Frame(self._bg_frame, bg="#FFFFFF")
         self.page_holder.place(relwidth=1, relheight=1)
+        try:
+            self.page_holder.configure(bg="systemTransparent")
+        except Exception:
+            pass
 
         # 窗口大小变化时重新铺背景图（防 resize 后拉伸/留白）
         self._bg_frame.bind("<Configure>", lambda e: self._on_bg_resize())

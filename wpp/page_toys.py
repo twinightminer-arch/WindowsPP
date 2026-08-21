@@ -496,7 +496,11 @@ GADGET_RUN_PREFIX = "WindowsPP_Gadget_"
 
 class PageToys(tk.Frame):
     def __init__(self, master, app):
-        super().__init__(master, bg="systemTransparent")
+        super().__init__(master)
+        try:
+            self.configure(bg="systemTransparent")
+        except Exception:
+            self.configure(bg="#FFFFFF")
         self.app = app
         self.root = app.root
         self._icons = []          # 防止 PhotoImage 被 GC

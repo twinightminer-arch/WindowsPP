@@ -23,7 +23,11 @@ def _has_pil():
 
 class PageSettings(tk.Frame):
     def __init__(self, master, app):
-        super().__init__(master, bg="systemTransparent")
+        super().__init__(master)
+        try:
+            self.configure(bg="systemTransparent")
+        except Exception:
+            self.configure(bg="#FFFFFF")
         self.app = app
         self.root = app.root
         self._build_ui()
