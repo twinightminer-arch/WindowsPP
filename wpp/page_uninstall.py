@@ -35,7 +35,7 @@ def _build_uninstall_cmd(entry):
 
 class PageUninstall(tk.Frame):
     def __init__(self, master, app):
-        super().__init__(master, bg="#FFFFFF")
+        super().__init__(master, bg="systemTransparent")
         self.app = app
         self.root = app.root
         self.entries = []

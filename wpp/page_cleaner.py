@@ -19,7 +19,7 @@ from wpp import common as C
 
 class PageCleaner(tk.Frame):
     def __init__(self, master, app):
-        super().__init__(master, bg="#FFFFFF")
+        super().__init__(master, bg="systemTransparent")
         self.app = app
         self.root = app.root
         self.busy = False

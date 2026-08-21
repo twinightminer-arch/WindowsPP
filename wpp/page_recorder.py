@@ -20,7 +20,7 @@ from wpp import recorder as R
 
 class PageRecorder(tk.Frame):
     def __init__(self, master, app):
-        super().__init__(master, bg="#FFFFFF")
+        super().__init__(master, bg="systemTransparent")
         self.app = app
         self.root = app.root
         self.rec = R.Recorder()

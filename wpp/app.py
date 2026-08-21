@@ -38,8 +38,9 @@ class App:
 
         # 背景视频 / 音乐状态
         self._bg_canvas = None
+        self._bg_image_id = None
+        self._bg_img = None
         self._music_on = False
-        self._bg_applied = ""
 
         self._set_icon()
         self._build_ui()
@@ -103,14 +104,19 @@ class App:
         right = tk.Frame(main)
         right.pack(side="left", fill="both", expand=True)
 
-        # 背景层（先创建，位于最底）
+        # 背景层（先创建，位于最底）：用 Canvas 承载图片，page_holder 透明叠加其上
         self._bg_frame = tk.Frame(right, bg="#FFFFFF")
         self._bg_frame.pack(fill="both", expand=True)
-        self._bg_label = tk.Label(self._bg_frame, bg="#FFFFFF")
-        self._bg_label.place(relwidth=1, relheight=1)
+        self._bg_canvas = tk.Canvas(self._bg_frame, bg="#FFFFFF",
+                                    highlightthickness=0, bd=0)
+        self._bg_canvas.place(relwidth=1, relheight=1)
 
-        self.page_holder = tk.Frame(self._bg_frame, bg="#FFFFFF")
+        self.page_holder = tk.Frame(self._bg_frame, bg="systemTransparent")
         self.page_holder.place(relwidth=1, relheight=1)
+
+        # 窗口大小变化时重新铺背景图（防 resize 后拉伸/留白）
+        self._bg_frame.bind("<Configure>", lambda e: self._on_bg_resize())
+        self._resize_job = None
 
         # 状态栏
         status = ttk.Frame(right)
@@ -170,12 +176,34 @@ class App:
             style.theme_use("clam")
         except Exception:
             pass
+        # 基础控件
+        style.configure(".", background="#FFFFFF")
+        style.configure("TFrame", background="#FFFFFF")
+        style.configure("TLabel", background="#FFFFFF", foreground="#1F2937")
+        style.configure("TLabelframe", background="#FFFFFF", foreground="#1F2937")
+        style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#1F2937")
+        # 按钮
         style.configure("TButton", padding=5)
         style.configure("Accent.TButton", background=color_hex, foreground="#FFFFFF")
         style.configure("Accent.Hover.TButton", background=color_hex)
+        style.map("Accent.TButton", background=[("active", color_hex)])
+        # 进度条
         style.configure("Horizontal.TProgressbar", troughcolor="#E5E7EB",
                         background=color_hex)
-        style.map("Accent.TButton", background=[("active", color_hex)])
+        # 复选/单选 indicator
+        style.map("TCheckbutton",
+                  background=[("active", color_hex)],
+                  indicatorcolor=[("selected", color_hex)])
+        style.map("TRadiobutton",
+                  background=[("active", color_hex)],
+                  indicatorcolor=[("selected", color_hex)])
+        # 滚动条
+        style.configure("Vertical.TScrollbar", background=color_hex, troughcolor="#F3F4F6")
+        style.configure("Horizontal.TScrollbar", background=color_hex, troughcolor="#F3F4F6")
+        # Treeview 选中行用主题色，主题切换效果更明显
+        style.map("Treeview",
+                  background=[("selected", color_hex)],
+                  foreground=[("selected", "#FFFFFF")])
         for k, b in self._nav_btns.items():
             if b.cget("bg") == self._theme:
                 b.configure(bg=color_hex, activebackground=color_hex)
@@ -193,38 +221,51 @@ class App:
 
     def _bg_apply(self):
         s = self.settings
+        # 每次都重新处理（去掉旧缓存），确保不透明度/视频静音等调节立即生效
         try:
             self._mci("close bgvideo")
         except Exception:
             pass
+        # 清掉旧图片
+        if self._bg_image_id is not None:
+            try:
+                self._bg_canvas.delete(self._bg_image_id)
+            except Exception:
+                pass
+            self._bg_image_id = None
         # 图片背景
         img_path = s.get("bg_image") or ""
-        if img_path and os.path.isfile(img_path) and img_path != self._bg_applied:
+        if img_path and os.path.isfile(img_path):
+            loaded = False
             try:
                 from PIL import Image, ImageTk
                 opacity = max(0, min(100, int(s.get("bg_opacity", 35)))) / 100.0
                 im = Image.open(img_path)
-                w, h = 1200, 740
-                im = im.resize((w, h))
+                # 按 canvas 实际尺寸缩放（窗口可能不是 1200x740）
+                cw = max(1, self._bg_canvas.winfo_width())
+                ch = max(1, self._bg_canvas.winfo_height())
+                im = im.resize((cw, ch))
                 if opacity < 1.0:
-                    overlay = Image.new("RGBA", (w, h), (255, 255, 255, int(255 * (1 - opacity))))
+                    overlay = Image.new("RGBA", (cw, ch), (255, 255, 255, int(255 * (1 - opacity))))
                     im = im.convert("RGBA")
                     im = Image.alpha_composite(im, overlay)
                 self._bg_img = ImageTk.PhotoImage(im)
-                self._bg_label.configure(image=self._bg_img)
-                self._bg_applied = img_path
+                self._bg_image_id = self._bg_canvas.create_image(
+                    cw // 2, ch // 2, image=self._bg_img, anchor="center")
+                loaded = True
             except Exception:
-                # PIL 不可用时用 tk.PhotoImage 原尺寸显示（png/gif）
+                # PIL 不可用或图片格式不支持时，尝试用 tk.PhotoImage 兜底（仅 png/gif）
                 try:
                     self._bg_img = tk.PhotoImage(file=img_path)
-                    self._bg_label.configure(image=self._bg_img)
-                    self._bg_applied = img_path
+                    cw = max(1, self._bg_canvas.winfo_width())
+                    ch = max(1, self._bg_canvas.winfo_height())
+                    self._bg_image_id = self._bg_canvas.create_image(
+                        cw // 2, ch // 2, image=self._bg_img, anchor="center")
+                    loaded = True
                 except Exception:
-                    self._bg_label.configure(image="", text="")
-                    self._bg_applied = ""
-        elif not img_path:
-            self._bg_label.configure(image="", text="")
-            self._bg_applied = ""
+                    pass
+            if not loaded:
+                self._bg_img = None
         # 视频背景（MCI 播放到画布，显示在无控件区域）
         video = s.get("bg_video") or ""
         if video and os.path.isfile(video):
@@ -265,6 +306,17 @@ class App:
             self._mci("play bgmusic")
             self._music_on = True
             self.root.after(500, self._music_loop)
+
+    def _on_bg_resize(self):
+        """窗口大小变化时延迟重铺背景图（防抖）。"""
+        if self._resize_job is not None:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except Exception:
+                pass
+        if not self.settings.get("bg_image"):
+            return
+        self._resize_job = self.root.after(250, self._bg_apply)
 
     def _music_loop(self):
         if not self._music_on:
