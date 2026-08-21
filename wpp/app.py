@@ -31,18 +31,32 @@ class App:
         self._monitor = None
         self._last_monitor_prompt = 0.0
 
+        # 透明哨兵色：主窗口用此色「挖空」，露出背后独立的背景窗口
+        # （Tk 无 systemTransparent，正确做法是窗口级 -transparentcolor）
+        self._sentinel = "#0a0a12"
+        self._transparent = False
+        try:
+            self.root.attributes("-transparentcolor", self._sentinel)
+            self._transparent = True
+        except Exception:
+            self._transparent = False
+        self.root.configure(bg=self._sentinel if self._transparent else "#F0F0F0")
+
+        # 背景视频 / 音乐状态
+        self._bg_win = None
+        self._bg_canvas = None
+        self._bg_image_id = None
+        self._bg_img = None
+        self._bg_base_color = "#F0F0F0"
+        self._music_on = False
+
         # 桌面拖拽拦截引擎
         self.drag_guard = C.DesktopDragGuard()
         self.drag_guard.start()
         self.update_drag_guard()
 
-        # 背景视频 / 音乐状态
-        self._bg_canvas = None
-        self._bg_image_id = None
-        self._bg_img = None
-        self._music_on = False
-
         self._set_icon()
+        self._init_bg_window()
         self._build_ui()
         self.apply_theme(self.settings.get("theme") or "#0078D4", save=False)
         self._bg_apply()
@@ -64,9 +78,102 @@ class App:
         except Exception:
             pass
 
+    # ---------- 背景窗口（独立于主窗口，置于其后） ----------
+    def _init_bg_window(self):
+        """创建位于主窗口背后的专用背景窗口，承载图片/视频/主题色调。
+
+        主窗口用哨兵色「挖空」透明，背景窗口恰好落在其后，于是主窗口的
+        透明区域会露出背景窗口里的内容（图片/视频/纯色）。这是 Tk 8.6 下
+        实现「控件背后显示背景」的可靠方案（无 systemTransparent）。
+        不支持透明时（self._transparent=False）不创建，降级为纯色窗口。
+        """
+        self._bg_win = None
+        self._bg_canvas = None
+        self._bg_image_id = None
+        self._bg_img = None
+        if not self._transparent:
+            return
+        try:
+            w = tk.Toplevel(self.root)
+            w.overrideredirect(True)          # 去掉边框/标题栏，作为纯背景
+            w.attributes("-topmost", False)
+            cv = tk.Canvas(w, highlightthickness=0, bd=0, bg=self._sentinel)
+            cv.place(relwidth=1, relheight=1)
+            self._bg_win = w
+            self._bg_canvas = cv
+            self._lower_bg_win()
+        except Exception:
+            self._bg_win = None
+            self._bg_canvas = None
+
+    def _lower_bg_win(self):
+        if self._bg_win:
+            try:
+                self._bg_win.lower(self.root)
+            except Exception:
+                pass
+
+    def _sync_bg_win(self):
+        """让背景窗口与主窗口完全重合（位置/尺寸同步）。"""
+        if not self._bg_win:
+            return
+        try:
+            x = self.root.winfo_rootx()
+            y = self.root.winfo_rooty()
+            w = self.root.winfo_width()
+            h = self.root.winfo_height()
+            self._bg_win.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+    def _on_root_configure(self):
+        self._sync_bg_win()
+        if self.settings.get("bg_image") or self.settings.get("bg_video"):
+            self._on_bg_resize()
+
+    def _on_root_map(self):
+        if self._bg_win:
+            try:
+                self._bg_win.deiconify()
+            except Exception:
+                pass
+            self._lower_bg_win()
+            self._sync_bg_win()
+
+    def _on_root_unmap(self):
+        if self._bg_win:
+            try:
+                self._bg_win.withdraw()
+            except Exception:
+                pass
+
+    def wtransparent(self, w):
+        """把控件设为「透明哨兵色」或降级白底（不支持透明时）。"""
+        try:
+            w.configure(bg=self._sentinel if self._transparent else "#FFFFFF")
+        except Exception:
+            try:
+                w.configure(bg="#FFFFFF")
+            except Exception:
+                pass
+
+    def _tint(self, hex_color, ratio):
+        """把颜色按 ratio 与白色混合（0=纯白，1=原色），得到浅色调。"""
+        try:
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+            r = int(r * ratio + 255 * (1 - ratio))
+            g = int(g * ratio + 255 * (1 - ratio))
+            b = int(b * ratio + 255 * (1 - ratio))
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception:
+            return "#F0F0F0"
+
     # ---------- UI 骨架 ----------
     def _build_ui(self):
-        main = ttk.Frame(self.root)
+        main = tk.Frame(self.root)
+        self.wtransparent(main)
         main.pack(fill="both", expand=True)
 
         # 左侧导航
@@ -100,27 +207,20 @@ class App:
         self._nav = nav
         self._theme = "#0078D4"
 
-        # 右侧：背景层 + 页面容器 + 状态栏
+        # 右侧：透明容器，露出背后背景窗口里的图片/视频/主题色
         right = tk.Frame(main)
+        self.wtransparent(right)
         right.pack(side="left", fill="both", expand=True)
 
-        # 背景层（先创建，位于最底）：用 Canvas 承载图片，page_holder 尽量透明叠加其上
-        self._bg_frame = tk.Frame(right, bg="#FFFFFF")
-        self._bg_frame.pack(fill="both", expand=True)
-        self._bg_canvas = tk.Canvas(self._bg_frame, bg="#FFFFFF",
-                                    highlightthickness=0, bd=0)
-        self._bg_canvas.place(relwidth=1, relheight=1)
-
-        # 透明可能不被支持（Tk 8.6 无 systemTransparent 时抛 TclError），安全降级为白底
-        self.page_holder = tk.Frame(self._bg_frame, bg="#FFFFFF")
+        self.page_holder = tk.Frame(right)
+        self.wtransparent(self.page_holder)
         self.page_holder.place(relwidth=1, relheight=1)
-        try:
-            self.page_holder.configure(bg="systemTransparent")
-        except Exception:
-            pass
 
-        # 窗口大小变化时重新铺背景图（防 resize 后拉伸/留白）
-        self._bg_frame.bind("<Configure>", lambda e: self._on_bg_resize())
+        # 主窗口移动/缩放/最小化时同步背景窗口几何，并防抖重铺背景图
+        self.root.bind("<Configure>", lambda e: self._on_root_configure())
+        self.root.bind("<Map>", lambda e: self._on_root_map())
+        self.root.bind("<Unmap>", lambda e: self._on_root_unmap())
+        self.root.bind("<FocusIn>", lambda e: self._lower_bg_win())
         self._resize_job = None
 
         # 状态栏
@@ -150,7 +250,10 @@ class App:
         }
         for p in self.pages.values():
             p.place_forget()
+            self.wtransparent(p)
         self.show_page("updater")
+        # 首次对齐背景窗口（之后靠 <Configure>/<Map> 维持）
+        self._sync_bg_win()
 
     # ---------- 导航 ----------
     def show_page(self, key):
@@ -181,12 +284,14 @@ class App:
             style.theme_use("clam")
         except Exception:
             pass
-        # 基础控件
-        style.configure(".", background="#FFFFFF")
-        style.configure("TFrame", background="#FFFFFF")
-        style.configure("TLabel", background="#FFFFFF", foreground="#1F2937")
-        style.configure("TLabelframe", background="#FFFFFF", foreground="#1F2937")
-        style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#1F2937")
+        # 基础控件：支持透明时，让面板/标签「透明」，露出背后背景窗口的
+        # 图片/视频/主题色；不支持时退回白底（保证可读）。
+        base_bg = self._sentinel if self._transparent else "#FFFFFF"
+        style.configure(".", background=base_bg)
+        style.configure("TFrame", background=base_bg)
+        style.configure("TLabel", background=base_bg, foreground="#1F2937")
+        style.configure("TLabelframe", background=base_bg, foreground="#1F2937")
+        style.configure("TLabelframe.Label", background=base_bg, foreground="#1F2937")
         # 按钮
         style.configure("TButton", padding=5)
         style.configure("Accent.TButton", background=color_hex, foreground="#FFFFFF")
@@ -212,6 +317,14 @@ class App:
         for k, b in self._nav_btns.items():
             if b.cget("bg") == self._theme:
                 b.configure(bg=color_hex, activebackground=color_hex)
+        # 背景窗口的浅色基调随主题色变化（无图片/视频时，整窗背景即为主题的浅色调）
+        if self._transparent and self._bg_canvas:
+            self._bg_base_color = self._tint(color_hex, 0.82)
+            if not (self.settings.get("bg_image") or self.settings.get("bg_video")):
+                try:
+                    self._bg_canvas.configure(bg=self._bg_base_color)
+                except Exception:
+                    pass
         if save:
             self.settings = C.save_settings(theme=color_hex)
 
@@ -225,6 +338,9 @@ class App:
             return -1
 
     def _bg_apply(self):
+        # 不支持透明（无背景窗口）时，背景图无法露出，直接返回避免报错
+        if not self._bg_canvas:
+            return
         s = self.settings
         # 每次都重新处理（去掉旧缓存），确保不透明度/视频静音等调节立即生效
         try:
@@ -271,11 +387,17 @@ class App:
                     pass
             if not loaded:
                 self._bg_img = None
-        # 视频背景（MCI 播放到画布，显示在无控件区域）
+        else:
+            # 无图片时按主题浅色调填充背景窗口（让「界面颜色」直接可见）
+            try:
+                self._bg_canvas.configure(bg=self._bg_base_color)
+            except Exception:
+                pass
+        # 视频背景（MCI 播放到背景窗口画布，透过主窗口透明区可见）
         video = s.get("bg_video") or ""
         if video and os.path.isfile(video):
             self._mci(f'open "{video}" alias bgvideo type mpegvideo')
-            self._mci(f'window bgvideo handle {self._bg_frame.winfo_id()}')
+            self._mci(f'window bgvideo handle {self._bg_canvas.winfo_id()}')
             vol = 0 if s.get("bg_mute") else 1000
             self._mci(f"setaudio bgvideo volume to {vol}")
             self._mci("play bgvideo")
@@ -313,13 +435,13 @@ class App:
             self.root.after(500, self._music_loop)
 
     def _on_bg_resize(self):
-        """窗口大小变化时延迟重铺背景图（防抖）。"""
+        """窗口大小变化时延迟重铺背景图/视频（防抖）。"""
         if self._resize_job is not None:
             try:
                 self.root.after_cancel(self._resize_job)
             except Exception:
                 pass
-        if not self.settings.get("bg_image"):
+        if not (self.settings.get("bg_image") or self.settings.get("bg_video")):
             return
         self._resize_job = self.root.after(250, self._bg_apply)
 
@@ -401,6 +523,11 @@ class App:
         try:
             self._mci("close bgvideo")
             self._mci("close bgmusic")
+        except Exception:
+            pass
+        try:
+            if self._bg_win:
+                self._bg_win.destroy()
         except Exception:
             pass
         self.root.destroy()
